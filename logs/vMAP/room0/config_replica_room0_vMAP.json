@@ -1,0 +1,105 @@
+{
+    "dataset": {
+        "live": 0,
+        "path": "/dataset/vmap/room_0/imap/00",
+        "format": "Replica",
+        "keep_alive": 20
+    },
+    "optimizer": {
+        "args":{
+            "lr": 0.001,
+            "weight_decay": 0.013,
+            "pose_lr": 0.001
+        },
+        "args_bg":{
+            "decoders_lr": 0.001,
+            "planes_lr": 0.005,
+            "c_planes_lr": 0.005
+        }
+    },
+    "trainer": {
+        "imap_mode": 0,
+        "do_bg": 1,
+        "n_models": 100,
+        "train_device": "cuda:0",
+        "data_device": "cuda:0",
+        "training_strategy": "vmap",
+        "epochs": 1000000,
+        "scale": 1000.0
+    },
+    "render": {
+        "depth_range": [0.0, 8.0],
+        "n_bins": 9,
+        "n_bins_cam2surface": 1,
+        "n_bins_cam2surface_bg": 5,
+        "iters_per_frame": 20,
+        "n_per_optim": 120,
+        "n_per_optim_bg": 1200
+    },
+    "model": {
+        "n_unidir_funcs": 5,
+        "obj_scale": 2.0,
+        "bg_scale": 5.0,
+        "color_scaling": 5.0,
+        "opacity_scaling": 10.0,
+        "gt_scene": 1,
+        "surface_eps": 0.1,
+        "other_eps": 0.05,
+        "keyframe_buffer_size": 20,
+        "keyframe_step": 25,
+        "keyframe_step_bg": 50,
+        "window_size": 5,
+        "window_size_bg": 10,
+        "hidden_layers_block": 1,
+        "hidden_feature_size": 32,
+        "hidden_feature_size_bg": 128,
+        "learnable_beta":1
+    },
+    "camera": {
+        "w": 1200,
+        "h": 680,
+        "fx": 600.0,
+        "fy": 600.0,
+        "cx": 599.5,
+        "cy": 339.5,
+        "mw": 0,
+        "mh": 0
+    },
+    "vis": {
+        "vis_device": "cuda:0",
+        "n_vis_iter": 500,
+        "n_bins_fine_vis": 10,
+        "im_vis_reduce": 10,
+        "grid_dim": 256,
+        "live_vis": 1,
+        "live_voxel_size": 0.005
+    },
+    "eslam": {
+        "bound": [[-4.5,4.9],[-5.7,4.4],[-3.7,4.3]],
+        "bound_dividable": 0.24,
+        "coarse_planes_res": 0.24,
+        "fine_planes_res": 0.06,
+        "coarse_c_planes_res": 0.24,
+        "fine_c_planes_res": 0.03,
+        "c_dim" :32,
+        "truncation":0.06,
+        "rendering_perturb": 1,
+        "n_stratified":32,
+        "n_importance":8,
+        "scale":1,
+        "perturb":1
+    },
+    "eslam_lr":{
+        "decoders_lr": 0.001,
+        "planes_lr": 0.005,
+        "c_planes_lr": 0.005,
+        "lr_factor": 1
+    },
+    "mapping":{
+        "w_color": 5,
+        "w_depth": 0.1,
+        "w_sdf_fs": 5,
+        "w_sdf_center": 200,
+        "w_sdf_tail": 10
+    }
+}

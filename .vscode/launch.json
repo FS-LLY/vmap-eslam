@@ -1,0 +1,24 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: 当前文件",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["--config","./configs/Replica/config_replica_room0_vMAP.json","--logdir","./logs/vMAP/room0",
+        "--save_ckpt","True"],
+            //"args": ["-W","ignore","--input_folder configs/Replica/room0.yaml" ]
+            //"pythonArgs":[">log0.1.txt 2>&1 &"],
+            "env": {
+                "CUDA_VISIBLE_DEVICES" : "2",
+                "PYTHONWARNINGS": "ignore"
+              }
+        }
+    ]
+}

@@ -117,7 +117,7 @@ if __name__ == "__main__":
                 twc = sample["T"].to(cfg.data_device)#camera pose
                 bbox_dict = sample["bbox_dict"]
                 eslam_rgb = rgb.transpose(0, 1)
-                eslam_depth = depth.transpose(0, 1)*6.5535.long()#jpg->png
+                eslam_depth = depth.transpose(0, 1)
                 eslam_twc = twc
                 eslam_twc[:3,1] = -1*eslam_twc[:3,1]
                 eslam_twc[:3,2] = -1*eslam_twc[:3,2]
@@ -292,13 +292,15 @@ if __name__ == "__main__":
             Batch_N_depth_mask = torch.stack(Batch_N_depth_mask).to(cfg.training_device)
             Batch_N_obj_mask = torch.stack(Batch_N_obj_mask).to(cfg.training_device)
             Batch_N_sampled_z = torch.stack(Batch_N_sampled_z).to(cfg.training_device)
-            if cfg.do_bg:               
+            if cfg.do_bg:     
+                '''          
                 bg_input_pcs = bg_input_pcs.to(cfg.training_device)
                 bg_gt_depth = bg_gt_depth.to(cfg.training_device)
                 bg_gt_rgb = bg_gt_rgb.to(cfg.training_device)/255
                 bg_valid_depth_mask = bg_valid_depth_mask.to(cfg.training_device)
                 bg_obj_mask = bg_obj_mask.to(cfg.training_device)
                 bg_sampled_z = bg_sampled_z.to(cfg.training_device) 
+                '''
                 with torch.no_grad():
                     bound = scene_bg.trainer.eslam.bound
                     det_rays_o = bg_origins.clone().detach().unsqueeze(-1)
