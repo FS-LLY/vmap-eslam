@@ -465,18 +465,33 @@ class sceneObject:
     def save_checkpoints(self, path, epoch):
         obj_id = self.obj_id
         chechpoint_load_file = (path + "/obj_" + str(obj_id) + "_frame_" + str(epoch) + ".pth")
-
-        torch.save(
-            {
-                "epoch": epoch,
-                "FC_state_dict": self.trainer.fc_occ_map.state_dict(),
-                "PE_state_dict": self.trainer.pe.state_dict(),
-                "obj_id": self.obj_id,
-                "bbox": self.bbox3d,
-                "obj_scale": self.trainer.obj_scale
-            },
-            chechpoint_load_file,
-        )
+        if self.obj_id == 0:
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "Decoder": self.trainer.decoders.state_dict(),
+                    "eslam": self.trainer.eslam,
+                    "decoders_para_list": self.trainer.decoders_para_list,
+                    "planes_para": self.trainer.planes_para,
+                    "c_planes_para": self.trainer.c_planes_para,
+                    "obj_id": self.obj_id,
+                    "bbox": self.bbox3d,
+                    "obj_scale": self.trainer.obj_scale
+                },
+                chechpoint_load_file,
+            )
+        else :
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "FC_state_dict": self.trainer.fc_occ_map.state_dict(),
+                    "PE_state_dict": self.trainer.pe.state_dict(),
+                    "obj_id": self.obj_id,
+                    "bbox": self.bbox3d,
+                    "obj_scale": self.trainer.obj_scale
+                },
+                chechpoint_load_file,
+            )
         # optimiser?
 
     def load_checkpoints(self, ckpt_file):
@@ -485,14 +500,23 @@ class sceneObject:
             print("ckpt not exist ", checkpoint_load_file)
             return
         checkpoint = torch.load(checkpoint_load_file)
-        self.trainer.fc_occ_map.load_state_dict(checkpoint["FC_state_dict"])
-        self.trainer.pe.load_state_dict(checkpoint["PE_state_dict"])
         self.obj_id = checkpoint["obj_id"]
+        if self.obj_id == 0:
+            self.trainer.decoders.load_state_dict(checkpoint["Decoder"])
+            self.trainer.eslam = checkpoint["eslam"]
+            self.trainer.decoders_para_list = checkpoint["decoders_para_list"]
+            self.trainer.planes_para = checkpoint["planes_para"]
+            self.trainer.c_planes_para = checkpoint["c_planes_para"]
+        else:
+            self.trainer.fc_occ_map.load_state_dict(checkpoint["FC_state_dict"])
+            self.trainer.pe.load_state_dict(checkpoint["PE_state_dict"])
+            self.trainer.fc_occ_map.to(self.training_device)
+            self.trainer.pe.to(self.training_device)
+            
         self.bbox3d = checkpoint["bbox"]
         self.trainer.obj_scale = checkpoint["obj_scale"]
 
-        self.trainer.fc_occ_map.to(self.training_device)
-        self.trainer.pe.to(self.training_device)
+        
 
 
 class cameraInfo:

@@ -1,0 +1,34 @@
+  0%|          | 0/2000 [00:00<?, ?it/s]  0%|          | 0/2000 [00:02<?, ?it/s]
+*********************************************
+getting next data excution time: 414.66 ms
+init new obj  0
+init new obj  2
+init new obj  3
+init new obj  4
+init new obj  6
+init new obj  7
+init new obj  9
+init new obj  14
+init new obj  20
+init new obj  27
+init new obj  36
+init new obj  39
+init new obj  41
+init new obj  45
+init new obj  47
+init new obj  63
+init new obj  65
+init new obj  71
+init new obj  79
+init new obj  85
+Appending data excution time: 612.63 ms
+add vmap excution time: 34.16 ms
+Sampling over 19 objects, excution time: 1696.82 ms
+Traceback (most recent call last):
+  File "./train.py", line 226, in <module>
+    = scene_bg.get_training_samples(cfg.n_iter_per_frame * cfg.win_size_bg, cfg.n_samples_per_frame_bg,
+  File "/data/vmap-eslam/vmap.py", line 366, in get_training_samples
+    origins, dirs_w = origin_dirs_W(sampled_twc, sampled_ray_dirs)
+  File "/data/vmap-eslam/vmap.py", line 39, in origin_dirs_W
+    dirs_W = (T_WC[:, None, :3, :3] @ dirs_C[..., None]).squeeze()
+KeyboardInterrupt
