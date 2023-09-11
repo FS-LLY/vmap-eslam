@@ -7,6 +7,7 @@ import vis
 import ESLAM
 import torch.nn as nn
 from tqdm import tqdm
+from pynvml import *
 
 class Trainer:
     def __init__(self, cfg):
@@ -62,46 +63,44 @@ class Trainer:
         self.pe = embedding.UniDirsEmbed(max_deg=self.n_unidir_funcs, scale=self.obj_scale).to(self.device)
     #渲染3D模型
     def meshing(self, bound, obj_center, grid_dim=256):
-        occ_range = [-1., 1.]
-        range_dist = occ_range[1] - occ_range[0]
-        scene_scale_np = bound.extent / (range_dist * self.bound_extent)
-        scene_scale = torch.from_numpy(scene_scale_np).float().to(self.device)
-        transform_np = np.eye(4, dtype=np.float32)
-        transform_np[:3, 3] = bound.center
-        transform_np[:3, :3] = bound.R
-        # transform_np = np.linalg.inv(transform_np)  #
-        transform = torch.from_numpy(transform_np).to(self.device)
-        grid_pc = render_rays.make_3D_grid(occ_range=occ_range, dim=grid_dim, device=self.device,
-                                           scale=scene_scale, transform=transform).view(-1, 3)
-        grid_pc -= obj_center.to(grid_pc.device)
-        ret = self.eval_points(grid_pc)
-        if ret is None:
-            return None
+        with torch.no_grad():
+            occ_range = [-1., 1.]
+            range_dist = occ_range[1] - occ_range[0]
+            scene_scale_np = bound.extent / (range_dist * self.bound_extent)
+            scene_scale = torch.from_numpy(scene_scale_np).float().to(self.device)
+            transform_np = np.eye(4, dtype=np.float32)
+            transform_np[:3, 3] = bound.center
+            transform_np[:3, :3] = bound.R
+            # transform_np = np.linalg.inv(transform_np)  #
+            transform = torch.from_numpy(transform_np).to(self.device)
+            grid_pc = render_rays.make_3D_grid(occ_range=occ_range, dim=grid_dim, device=self.device,
+                                                scale=scene_scale, transform=transform).view(-1, 3)
+            grid_pc -= obj_center.to(grid_pc.device)
+            ret = self.eval_points(grid_pc)#内存爆了
+            if ret is None:
+                return None
 
-        occ, _ = ret
-        mesh = vis.marching_cubes(occ.view(grid_dim, grid_dim, grid_dim).cpu().detach().numpy())
-        if mesh is None:
-            print("marching cube failed")
-            return None
+            occ, _ = ret
+            mesh = vis.marching_cubes(occ.view(grid_dim, grid_dim, grid_dim).cpu().detach().numpy())
+            if mesh is None:
+                print("marching cube failed")
+                return None
+            # Transform to [-1, 1] range
+            mesh.apply_translation([-0.5, -0.5, -0.5])
+            mesh.apply_scale(2)
 
-        # Transform to [-1, 1] range
-        mesh.apply_translation([-0.5, -0.5, -0.5])
-        mesh.apply_scale(2)
-
-        # Transform to scene coordinates
-        mesh.apply_scale(scene_scale_np)
-        mesh.apply_transform(transform_np)
-
-        vertices_pts = torch.from_numpy(np.array(mesh.vertices)).float().to(self.device)
-        ret = self.eval_points(vertices_pts)
-        if ret is None:
-            return None
-        _, color = ret
-        mesh_color = color * 255
-        vertex_colors = mesh_color.detach().squeeze(0).cpu().numpy().astype(np.uint8)
-        mesh.visual.vertex_colors = vertex_colors
-
-        return mesh
+            # Transform to scene coordinates
+            mesh.apply_scale(scene_scale_np)
+            mesh.apply_transform(transform_np)
+            vertices_pts = torch.from_numpy(np.array(mesh.vertices)).float().to(self.device)
+            ret = self.eval_points(vertices_pts)
+            if ret is None:
+                return None
+            _, color = ret
+            mesh_color = color * 255
+            vertex_colors = mesh_color.detach().squeeze(0).cpu().numpy().astype(np.uint8)
+            mesh.visual.vertex_colors = vertex_colors
+            return mesh
 
     def eval_points(self, points, chunk_size=100000):
         # 256^3 = 16777216
@@ -123,7 +122,7 @@ class Trainer:
                 rets.append(ret)
 
             ret = torch.cat(rets, dim=0)
-            return (ret[...,3:],ret[...,:3])#sdf,rgb
+            return (ret[...,-1],ret[...,:3])#sdf,rgb
         else:
             alpha, color = [], []
             n_chunks = int(np.ceil(points.shape[0] / chunk_size))
@@ -137,7 +136,7 @@ class Trainer:
             alpha = torch.stack(alpha)
             color = torch.stack(color)
             #把点按sigmoid 投到[-1,1]
-            occ = render_rays.occupancy_activation(alpha).detach()
+            occ = render_rays.occupancy_activation(alpha).detach()#这里有个detach
             if occ.max() == 0:
                 print("no occ")
                 return None

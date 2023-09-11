@@ -16,7 +16,7 @@
             //"args": ["-W","ignore","--input_folder configs/Replica/room0.yaml" ]
             //"pythonArgs":[">log0.1.txt 2>&1 &"],
             "env": {
-                "CUDA_VISIBLE_DEVICES" : "2",
+                "CUDA_VISIBLE_DEVICES" : "0",
                 "PYTHONWARNINGS": "ignore"
               }
         }

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from common import normalize_3d_coordinate
 import torch.nn.functional as F
+from pynvml import *
 
 def init_weights(m, init_fn=torch.nn.init.xavier_normal_):
     if type(m) == torch.nn.Linear:
@@ -135,15 +136,13 @@ class ESLAMdecoder(torch.nn.Module):
             feat (tensor): sampled features
         """
         vgrid = p_nor[None, :, None]
-
         feat = []
         for i in range(len(planes_xy)):
             xy = F.grid_sample(planes_xy[i], vgrid[..., [0, 1]], padding_mode='border', align_corners=True, mode='bilinear').squeeze().transpose(0, 1)
             xz = F.grid_sample(planes_xz[i], vgrid[..., [0, 2]], padding_mode='border', align_corners=True, mode='bilinear').squeeze().transpose(0, 1)
             yz = F.grid_sample(planes_yz[i], vgrid[..., [1, 2]], padding_mode='border', align_corners=True, mode='bilinear').squeeze().transpose(0, 1)
             feat.append(xy + xz + yz)#out of memory
-        feat = torch.cat(feat, dim=-1)
-
+        feat = torch.cat(feat, dim=-1)#这里爆内存 size:([500000,64])
         return feat
 
     def get_raw_sdf(self, p_nor, all_planes):
@@ -163,7 +162,7 @@ class ESLAMdecoder(torch.nn.Module):
             h = self.linears[i](h)
             h = F.relu(h, inplace=True)
         sdf = torch.tanh(self.output_linear(h)).squeeze()
-
+        del h
         return sdf
 
     def get_raw_rgb(self, p_nor, all_planes):
@@ -183,7 +182,6 @@ class ESLAMdecoder(torch.nn.Module):
             h = self.c_linears[i](h)
             h = F.relu(h, inplace=True)
         rgb = torch.sigmoid(self.c_output_linear(h))
-
         return rgb
 
     def forward(self, p, all_planes):

@@ -5,13 +5,12 @@ import utils
 import open3d
 import dataset
 import vis
-import ESLAM
 from functorch import vmap
 import argparse
 from cfg import Config
 import shutil
-import model
 import Renderer
+from pynvml import *
 
 if __name__ == "__main__":
     #############################################
@@ -93,14 +92,18 @@ if __name__ == "__main__":
         #                                              (cfg), (track_to_map_Buffer), (None),
         #                                              (kfs_que), (True),))
         # track_p.start()
-
-
     # init vmap
     fc_models, pe_models = [], []
     scene_bg = None
-
+    nvmlInit()  
+    handle = nvmlDeviceGetHandleByIndex(0)
+    info_past = nvmlDeviceGetMemoryInfo(handle)
     for frame_id in tqdm(range(dataset_len)):
         print("*********************************************")
+        info = nvmlDeviceGetMemoryInfo(handle)
+        if info.used - info_past.used > 1024*1024:
+            print(f"Used GPU Memory in frame_id {frame_id}: {info.used / (1024 * 1024)} MB")
+        info_past = info
         # get new frame data
         with performance_measure(f"getting next data"):
             if not cfg.live_mode:
@@ -202,7 +205,6 @@ if __name__ == "__main__":
                         #     if p.requires_grad:
                         #         total_params += p.numel()
                         # print("total param ", total_params)
-
         # dynamically add vmap
         with performance_measure(f"add vmap"):
             if cfg.training_strategy == "vmap" and update_vmap_model == True:
@@ -278,8 +280,6 @@ if __name__ == "__main__":
                 #     extrinsic=T_CW)
                 # input_pc.points = open3d.utility.Vector3dVector(np.array(input_pc.points) - obj_k.obj_center.cpu().numpy())
                 # open3d.visualization.draw_geometries([pc, input_pc])
-
-
         ####################################################
         # training
         assert len(Batch_N_input_pcs) > 0
@@ -347,10 +347,8 @@ if __name__ == "__main__":
                 else:
                     print("training strategy {} is not implemented ".format(cfg.training_strategy))
                     exit(-1)
-
-
             # step loss
-            # with performance_measure(f"Batch LOSS"):
+            with performance_measure(f"Batch LOSS"):
                 batch_loss, _ = loss.step_batch_loss(batch_alpha, batch_color,
                                      batch_gt_depth.detach(), batch_gt_rgb.detach(),
                                      batch_obj_mask.detach(), batch_depth_mask.detach(),
@@ -377,7 +375,6 @@ if __name__ == "__main__":
                     optimiser.step()
                 optimiser.zero_grad(set_to_none=True)
                 # print("loss ", batch_loss.item())
-
         # update each origin model params
         # todo find a better way    # https://github.com/pytorch/functorch/issues/280
         with performance_measure(f"updating vmap param"):
@@ -388,8 +385,6 @@ if __name__ == "__main__":
                             param.copy_(fc_param[i][model_id])
                         for i, param in enumerate(obj_k.trainer.pe.parameters()):
                             param.copy_(pe_param[i][model_id])
-
-
         ####################################################################
         # live vis mesh
         if (((frame_id % cfg.n_vis_iter) == 0 or frame_id == dataset_len-1) or
@@ -401,16 +396,14 @@ if __name__ == "__main__":
                     print("get bound failed obj ", obj_id)
                     continue
                 adaptive_grid_dim = int(np.minimum(np.max(bound.extent)//cfg.live_voxel_size+1, cfg.grid_dim))
-                mesh = obj_k.trainer.meshing(bound, obj_k.obj_center, grid_dim=adaptive_grid_dim)
+                mesh = obj_k.trainer.meshing(bound, obj_k.obj_center, grid_dim=adaptive_grid_dim)#内存炸了
                 if mesh is None:
                     print("meshing failed obj ", obj_id)
                     continue
-
                 # save to dir
                 obj_mesh_output = os.path.join(log_dir, "scene_mesh")
                 os.makedirs(obj_mesh_output, exist_ok=True)
                 mesh.export(os.path.join(obj_mesh_output, "frame_{}_obj{}.obj".format(frame_id, str(obj_id))))
-
                 # live vis
                 open3d_mesh = vis.trimesh_to_open3d(mesh)
                 vis3d.add_geometry(open3d_mesh)
@@ -418,7 +411,6 @@ if __name__ == "__main__":
                 # update vis3d
                 vis3d.poll_events()
                 vis3d.update_renderer()
-
         if False:    # follow cam
             cam = view_ctl.convert_to_pinhole_camera_parameters()
             T_CW_np = np.linalg.inv(twc.cpu().numpy())
