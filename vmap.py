@@ -4,14 +4,14 @@ import torch
 from time import perf_counter_ns
 from tqdm import tqdm
 import trainer
-import open3d
+import open3d 
 import trimesh
 import scipy
 from bidict import bidict
 import copy
 import os
 import torch.nn as nn
-import ESLAM
+from packaging import version
 
 import utils
 
@@ -276,6 +276,11 @@ class sceneObject:
             mask = self.rgbs_batch[kf_id, :, :, self.state_idx].squeeze() == self.this_obj
             depth = self.depth_batch[kf_id].cpu().clone()
             twc = self.t_wc_batch[kf_id].cpu().numpy()
+            if self.obj_id == 0:
+                mask = mask.transpose(0,1)
+                depth = depth.transpose(0,1)
+                twc[:3,1]*= -1
+                twc[:3,1]*= -1
             depth[~mask] = 0#只对mask为0的值进行操作
             depth = depth.permute(1,0).numpy().astype(np.float32)
             T_CW = np.linalg.inv(twc)
@@ -310,11 +315,76 @@ class sceneObject:
         bbox3d.color = (255,0,0)
         self.bbox3d = utils.bbox_open3d2bbox(bbox_o3d=bbox3d)
         # self.pc = []
-        print("obj ", self.obj_id)
-        print("bound ", bbox3d)
-        print("kf id dict ", self.kf_id_dict)
         # open3d.visualization.draw_geometries([bbox3d, pcs])
         return bbox3d
+    
+    def get_bound_from_frames(self,cfg, scale=1):
+        """
+        Get the scene bound (convex hull),
+        using sparse estimated camera poses and corresponding depth images.
+
+        Args:
+            keyframe_dict (list): list of keyframe info dictionary.
+            scale (float): scene scale.
+
+        Returns:
+            return_mesh (trimesh.Trimesh): the convex hull.
+        """
+
+        H, W, fx, fy, cx, cy = cfg.H, cfg.W, cfg.fx, cfg.fy, cfg.cx, cfg.cy
+        self.mesh_bound_scale =cfg.mesh_bound_scale
+
+        if version.parse(open3d.__version__) >= version.parse('0.13.0'):
+            # for new version as provided in environment.yaml
+            volume = open3d.pipelines.integration.ScalableTSDFVolume(
+                voxel_length=4.0 * scale / 512.0,
+                sdf_trunc=0.04 * scale,
+                color_type=open3d.pipelines.integration.TSDFVolumeColorType.RGB8)
+        else:
+            # for lower version
+            volume = open3d.integration.ScalableTSDFVolume(
+                voxel_length=4.0 * scale / 512.0,
+                sdf_trunc=0.04 * scale,
+                color_type=open3d.integration.TSDFVolumeColorType.RGB8)
+        cam_points = []
+        for kf_id in range(20):
+            c2w = self.t_wc_batch[kf_id].cpu().clone().numpy()
+            # convert to open3d camera pose
+            c2w[:3, 1] *= -1.0
+            c2w[:3, 2] *= -1.0
+            w2c = np.linalg.inv(c2w)
+            cam_points.append(c2w[:3, 3])
+            depth = self.depth_batch[kf_id].cpu().clone().numpy()
+            color = self.rgbs_batch[kf_id,:,:,:3].cpu().clone().numpy()
+
+            depth = open3d.geometry.Image(depth.astype(np.float32))
+            color = open3d.geometry.Image(np.array(
+                (color * 255).astype(np.uint8)))
+
+            intrinsic = open3d.camera.PinholeCameraIntrinsic(W, H, fx, fy, cx, cy)
+            rgbd = open3d.geometry.RGBDImage.create_from_color_and_depth(
+                color,
+                depth,
+                depth_scale=1,
+                depth_trunc=1000,
+                convert_rgb_to_intensity=False)
+            volume.integrate(rgbd, intrinsic, w2c)
+
+        cam_points = np.stack(cam_points, axis=0)
+        mesh = volume.extract_triangle_mesh()
+        mesh_points = np.array(mesh.vertices)
+        points = np.concatenate([cam_points, mesh_points], axis=0)
+        o3d_pc = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(points))
+        mesh, _ = o3d_pc.compute_convex_hull()
+        mesh.compute_vertex_normals()
+        if version.parse(open3d.__version__) >= version.parse('0.13.0'):
+            mesh = mesh.scale(self.mesh_bound_scale, mesh.get_center())
+        else:
+            mesh = mesh.scale(self.mesh_bound_scale, center=True)
+        points = np.array(mesh.vertices)
+        faces = np.array(mesh.triangles)
+        return_mesh = trimesh.Trimesh(vertices=points, faces=faces)
+        return return_mesh
 
 
 

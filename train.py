@@ -11,12 +11,14 @@ from cfg import Config
 import shutil
 import Renderer
 from pynvml import *
+import matplotlib
 
 if __name__ == "__main__":
     #############################################
     # init config
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
+    matplotlib.interactive(False)
 
     # setting params
     parser = argparse.ArgumentParser(description='Model training for single GPU')
@@ -119,9 +121,9 @@ if __name__ == "__main__":
                 depth = sample["depth"].to(cfg.data_device)
                 twc = sample["T"].to(cfg.data_device)#camera pose
                 bbox_dict = sample["bbox_dict"]
-                eslam_rgb = rgb.transpose(0, 1)
-                eslam_depth = depth.transpose(0, 1)
-                eslam_twc = twc
+                eslam_rgb = rgb.clone().transpose(0, 1)
+                eslam_depth = depth.clone().transpose(0, 1)
+                eslam_twc = twc.clone()
                 eslam_twc[:3,1] = -1*eslam_twc[:3,1]
                 eslam_twc[:3,2] = -1*eslam_twc[:3,2]
                 
@@ -152,7 +154,7 @@ if __name__ == "__main__":
                         state[inst_mask == obj_id] = 1
                         state[inst_mask == -1] = 2
                     bbox = bbox_dict[obj_id]
-                    eslam_state = state.transpose(0, 1)
+                    eslam_state = state.clone().transpose(0, 1)
                     eslam_bbox = bbox.clone()
                     eslam_bbox[[0,2]] = eslam_bbox[[2,0]]
                     eslam_bbox[[1,3]] = eslam_bbox[[3,1]]
@@ -391,15 +393,25 @@ if __name__ == "__main__":
             (cfg.live_mode and time.time()-last_frame_time>cfg.keep_live_time)) and frame_id >= 10:
             vis3d.clear_geometries()
             for obj_id, obj_k in vis_dict.items():
-                bound = obj_k.get_bound(intrinsic_open3d)#相机参数
-                if bound is None:
-                    print("get bound failed obj ", obj_id)
-                    continue
-                adaptive_grid_dim = int(np.minimum(np.max(bound.extent)//cfg.live_voxel_size+1, cfg.grid_dim))
-                mesh = obj_k.trainer.meshing(bound, obj_k.obj_center, grid_dim=adaptive_grid_dim)#内存炸了
-                if mesh is None:
-                    print("meshing failed obj ", obj_id)
-                    continue
+                '''
+                if obj_id == 0:
+                    all_planes = obj_k.trainer.eslam.all_planes
+                    decoders = obj_k.trainer.decoders
+                    bound = obj_k.get_bound(intrinsic_open3d)#相机参数
+                    mesh = obj_k.trainer.bg_get_mesh(all_planes,decoders,bound)
+                
+                else:
+                '''
+                if True:
+                    bound = obj_k.get_bound(intrinsic_open3d)#相机参数
+                    if bound is None:
+                        print("get bound failed obj ", obj_id)
+                        continue
+                    adaptive_grid_dim = int(np.minimum(np.max(bound.extent)//cfg.live_voxel_size+1, cfg.grid_dim))
+                    mesh = obj_k.trainer.meshing(bound, obj_k.obj_center, grid_dim=adaptive_grid_dim)
+                    if mesh is None:
+                        print("meshing failed obj ", obj_id)
+                        continue
                 # save to dir
                 obj_mesh_output = os.path.join(log_dir, "scene_mesh")
                 os.makedirs(obj_mesh_output, exist_ok=True)

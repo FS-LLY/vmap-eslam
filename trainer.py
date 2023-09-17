@@ -8,6 +8,11 @@ import ESLAM
 import torch.nn as nn
 from tqdm import tqdm
 from pynvml import *
+import trimesh
+import skimage
+from packaging import version
+import numpy as np
+import open3d as o3d
 
 class Trainer:
     def __init__(self, cfg):
@@ -20,6 +25,10 @@ class Trainer:
         self.n_unidir_funcs = cfg.n_unidir_funcs
         self.emb_size1 = 21*(3+1)+3
         self.emb_size2 = 21*(5+1)+3 - self.emb_size1
+        self.resolution = cfg.resolution
+        self.marching_cubes_bound = cfg.marching_cubes_bound
+        self.level_set = cfg.level_set
+        self.points_batch_size=500000
 
         self.load_network(cfg)
 
@@ -102,7 +111,7 @@ class Trainer:
             mesh.visual.vertex_colors = vertex_colors
             return mesh
 
-    def eval_points(self, points, chunk_size=100000):
+    def eval_points(self, points,chunk_size=100000):
         # 256^3 = 16777216
         if self.obj_id == 0 and self.cfg.do_bg:
             self.points_batch_size = 500000
@@ -116,7 +125,7 @@ class Trainer:
                 mask_z = (pi[:, 2] < bound[2][1]) & (pi[:, 2] > bound[2][0])
                 mask = mask_x & mask_y & mask_z
 
-                ret = self.decoders(pi, all_planes=self.eslam.all_planes)
+                ret = self.decoders(pi, self.eslam.all_planes)
 
                 ret[~mask, -1] = -1
                 rets.append(ret)
@@ -141,6 +150,114 @@ class Trainer:
                 print("no occ")
                 return None
             return (occ, color)
+
+    def bg_get_mesh(self, all_planes , decoders,mesh_bound, device='cuda:0', color=True):
+        """
+        Get mesh from keyframes and feature planes and save to file.
+        Args:
+            mesh_out_file (str): output mesh file.
+            all_planes (Tuple): all feature planes.
+            decoders (torch.nn.Module): decoders for TSDF and color.
+            keyframe_dict (dict): keyframe dictionary.
+            device (str): device to run the model.
+            color (bool): whether to use color.
+        Returns:
+            None
+
+        """
+
+        with torch.no_grad():
+            grid = self.get_grid_uniform(self.resolution)
+            points = grid['grid_points']
+            
+
+            z = []
+            mask = []
+            for i, pnts in enumerate(torch.split(points, self.points_batch_size, dim=0)):
+                mask.append(mesh_bound.contains(pnts.cpu().numpy()))
+            mask = np.concatenate(mask, axis=0)
+
+            for i, pnts in enumerate(torch.split(points, self.points_batch_size, dim=0)):
+                z.append(self.eval_points(pnts.to(device), all_planes, decoders).cpu().numpy()[:, -1])
+            z = np.concatenate(z, axis=0)
+            z[~mask] = -1
+
+            try:
+                if version.parse(
+                        skimage.__version__) > version.parse('0.15.0'):
+                    # for new version as provided in environment.yaml
+                    verts, faces, normals, values = skimage.measure.marching_cubes(
+                        volume=z.reshape(
+                            grid['xyz'][1].shape[0], grid['xyz'][0].shape[0],
+                            grid['xyz'][2].shape[0]).transpose([1, 0, 2]),
+                        level=self.level_set,
+                        spacing=(grid['xyz'][0][2] - grid['xyz'][0][1],
+                                 grid['xyz'][1][2] - grid['xyz'][1][1],
+                                 grid['xyz'][2][2] - grid['xyz'][2][1]))
+                else:
+                    # for lower version
+                    verts, faces, normals, values = skimage.measure.marching_cubes_lewiner(
+                        volume=z.reshape(
+                            grid['xyz'][1].shape[0], grid['xyz'][0].shape[0],
+                            grid['xyz'][2].shape[0]).transpose([1, 0, 2]),
+                        level=self.level_set,
+                        spacing=(grid['xyz'][0][2] - grid['xyz'][0][1],
+                                 grid['xyz'][1][2] - grid['xyz'][1][1],
+                                 grid['xyz'][2][2] - grid['xyz'][2][1]))
+            except:
+                print('marching_cubes error. Possibly no surface extracted from the level set.')
+                return
+
+            # convert back to world coordinates
+            vertices = verts + np.array([grid['xyz'][0][0], grid['xyz'][1][0], grid['xyz'][2][0]])
+
+            if color:
+                # color is extracted by passing the coordinates of mesh vertices through the network
+                points = torch.from_numpy(vertices)
+                z = []
+                for i, pnts in enumerate(torch.split(points, self.points_batch_size, dim=0)):
+                    z_color = self.eval_points(pnts.to(device).float(), all_planes, decoders).cpu()[..., :3]
+                    z.append(z_color)
+                z = torch.cat(z, dim=0)
+                vertex_colors = z.numpy()
+            else:
+                vertex_colors = None
+
+            vertices /= self.scale
+            mesh = trimesh.Trimesh(vertices, faces, vertex_colors=vertex_colors)
+            return mesh
+
+    def get_grid_uniform(self, resolution):
+        """
+        Get query point coordinates for marching cubes.
+
+        Args:
+            resolution (int): marching cubes resolution.
+
+        Returns:
+            (dict): points coordinates and sampled coordinates for each axis.
+        """
+        bound = self.marching_cubes_bound
+
+        padding = 0.05
+
+        nsteps_x = ((bound[0][1] - bound[0][0] + 2 * padding) / resolution).round().int().item()
+        x = np.linspace(bound[0][0] - padding, bound[0][1] + padding, nsteps_x)
+        
+        nsteps_y = ((bound[1][1] - bound[1][0] + 2 * padding) / resolution).round().int().item()
+        y = np.linspace(bound[1][0] - padding, bound[1][1] + padding, nsteps_y)
+        
+        nsteps_z = ((bound[2][1] - bound[2][0] + 2 * padding) / resolution).round().int().item()
+        z = np.linspace(bound[2][0] - padding, bound[2][1] + padding, nsteps_z)
+
+        x_t, y_t, z_t = torch.from_numpy(x).float(), torch.from_numpy(y).float(), torch.from_numpy(z).float()
+        grid_x, grid_y, grid_z = torch.meshgrid(x_t, y_t, z_t, indexing='xy')
+        grid_points_t = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1), grid_z.reshape(-1)], dim=1)
+
+        return {"grid_points": grid_points_t, "xyz": [x, y, z]}
+    
+
+    
 
 
 

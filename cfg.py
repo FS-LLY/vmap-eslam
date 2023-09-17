@@ -109,6 +109,9 @@ class Config:
         # enlarge the bound a bit to allow it dividable by bound_dividable
         self.bound[:, 1] = (((self.bound[:, 1]-self.bound[:, 0]) /
                             self.bound_dividable).int()+1)*self.bound_dividable+self.bound[:, 0]
+        self.mesh_bound_scale = config["eslam"]["mesh_bound_scale"]
+        self.resolution=config["eslam"]["resolution"]
+        
         
 
         self.w_color = config["mapping"]["w_color"]
@@ -117,6 +120,9 @@ class Config:
         self.w_sdf_fs = config["mapping"]["w_sdf_fs"]
         self.w_sdf_center = config["mapping"]["w_sdf_center"]
         self.w_sdf_tail = config["mapping"]["w_sdf_tail"]
+        self.marching_cubes_bound = torch.from_numpy(
+            np.array(config['mapping']['marching_cubes_bound']) * self.scale)
+        self.level_set =config["eslam"]["level_set"]
         
 
         self.decoders_lr = config["eslam_lr"]["decoders_lr"]
