@@ -162,7 +162,6 @@ class ESLAMdecoder(torch.nn.Module):
             h = self.linears[i](h)
             h = F.relu(h, inplace=True)
         sdf = torch.tanh(self.output_linear(h)).squeeze()
-        del h
         return sdf
 
     def get_raw_rgb(self, p_nor, all_planes):

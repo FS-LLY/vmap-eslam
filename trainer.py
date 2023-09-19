@@ -116,7 +116,7 @@ class Trainer:
         if self.obj_id == 0 and self.cfg.do_bg:
             self.points_batch_size = 500000
             p_split = torch.split(points, self.points_batch_size)
-            bound = self.bound
+            bound = self.bound##################################
             rets = []
             for pi in p_split:
                 # mask for points out of bound
@@ -131,7 +131,11 @@ class Trainer:
                 rets.append(ret)
 
             ret = torch.cat(rets, dim=0)
-            return (ret[...,-1],ret[...,:3])#sdf,rgb
+            alpha = self.sdf2alpha(ret[..., -1], self.decoders.beta)#volume densities
+            
+            occ = 1 - torch.exp(-alpha)
+            return (occ,ret[...,:3])#occ,rgb
+            #return (alpha,ret[...,:3])##?S
         else:
             alpha, color = [], []
             n_chunks = int(np.ceil(points.shape[0] / chunk_size))
@@ -255,6 +259,12 @@ class Trainer:
         grid_points_t = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1), grid_z.reshape(-1)], dim=1)
 
         return {"grid_points": grid_points_t, "xyz": [x, y, z]}
+    
+    def sdf2alpha(self, sdf, beta=10):
+        """
+
+        """
+        return 1. - torch.exp(-beta * torch.sigmoid(-sdf * beta))
     
 
     

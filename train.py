@@ -236,7 +236,7 @@ if __name__ == "__main__":
                 bg_input_pcs = input_pcs.reshape(
                     [input_pcs.shape[0] * input_pcs.shape[1], input_pcs.shape[2], input_pcs.shape[3]])
                 bg_sampled_z = sampled_z.reshape([sampled_z.shape[0] * sampled_z.shape[1], sampled_z.shape[2]])
-                bg_origins = origins.unsqueeze(0).expand(120, -1, -1)
+                bg_origins = origins.unsqueeze(1).expand(cfg.n_iter_per_frame * cfg.win_size_bg, cfg.n_samples_per_frame_bg, -1)########################
                 bg_origins = bg_origins.reshape(bg_origins.shape[0]*bg_origins.shape[1],bg_origins.shape[2])
                 #200*3->24000*3
                 bg_dirs_W = dirs_W.reshape(dirs_W.shape[0]*dirs_W.shape[1],dirs_W.shape[2])
@@ -295,14 +295,14 @@ if __name__ == "__main__":
             Batch_N_obj_mask = torch.stack(Batch_N_obj_mask).to(cfg.training_device)
             Batch_N_sampled_z = torch.stack(Batch_N_sampled_z).to(cfg.training_device)
             if cfg.do_bg:     
-                '''          
+                          
                 bg_input_pcs = bg_input_pcs.to(cfg.training_device)
                 bg_gt_depth = bg_gt_depth.to(cfg.training_device)
                 bg_gt_rgb = bg_gt_rgb.to(cfg.training_device)/255
                 bg_valid_depth_mask = bg_valid_depth_mask.to(cfg.training_device)
                 bg_obj_mask = bg_obj_mask.to(cfg.training_device)
                 bg_sampled_z = bg_sampled_z.to(cfg.training_device) 
-                '''
+                
                 with torch.no_grad():
                     bound = scene_bg.trainer.eslam.bound
                     det_rays_o = bg_origins.clone().detach().unsqueeze(-1)
@@ -372,7 +372,7 @@ if __name__ == "__main__":
                     scaler.scale(batch_loss).backward()
                     scaler.step(optimiser)
                     scaler.update()
-                else:
+                else:###############################
                     batch_loss.backward()
                     optimiser.step()
                 optimiser.zero_grad(set_to_none=True)

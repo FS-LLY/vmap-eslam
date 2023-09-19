@@ -315,6 +315,9 @@ class sceneObject:
         bbox3d.color = (255,0,0)
         self.bbox3d = utils.bbox_open3d2bbox(bbox_o3d=bbox3d)
         # self.pc = []
+        print("obj ", self.obj_id)
+        print("bound ", bbox3d)
+        print("kf id dict ", self.kf_id_dict)
         # open3d.visualization.draw_geometries([bbox3d, pcs])
         return bbox3d
     
