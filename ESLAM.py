@@ -111,7 +111,8 @@ class ESLAM():
                 plane.share_memory_()
                 shared_c_planes[i] = plane
         self.all_planes = (self.shared_planes_xy, self.shared_planes_xz, self.shared_planes_yz, self.shared_c_planes_xy, self.shared_c_planes_xz, self.shared_c_planes_yz)
-
+        self.estimate_c2w_list = torch.zeros((self.n_img, 4, 4), device=self.device)
+        self.estimate_c2w_list.share_memory_()
         '''
         torch.cuda.device_count() #for debug
         self.cfg = cfg

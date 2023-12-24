@@ -1,8 +1,10 @@
 import random
 import numpy as np
 import torch
+import time
 from time import perf_counter_ns
 from tqdm import tqdm
+import cv2
 import trainer
 import open3d 
 import trimesh
@@ -131,6 +133,8 @@ class sceneObject:
         self.n_keyframes = 1  # Number of keyframes
         self.kf_pointer = None
         self.keyframe_buffer_size = cfg.keyframe_buffer_size
+        if obj_id == 0:
+            self.keyframe_buffer_size*=25
         self.kf_id_dict = bidict({live_frame_id:0})
         self.kf_buffer_full = False
         self.frame_cnt = 0  # number of frames taken in
@@ -160,6 +164,7 @@ class sceneObject:
         # Initialize first frame rgb and pixel state
         self.rgbs_batch[0, :, :, self.rgb_idx] = rgb
         self.rgbs_batch[0, :, :, self.state_idx] = mask[..., None]
+        
 
         self.depth_batch = torch.empty(self.keyframe_buffer_size,
                                        self.frames_width,
@@ -182,8 +187,6 @@ class sceneObject:
         trainer_cfg.obj_id = self.obj_id
         trainer_cfg.hidden_feature_size = self.hidden_feature_size
         trainer_cfg.obj_scale = self.obj_scale
-        self.trainer = trainer.Trainer(trainer_cfg)
-
         # 3D boundary
         self.bbox3d = None
         self.pc = []
@@ -272,15 +275,15 @@ class sceneObject:
     def get_bound(self, intrinsic_open3d):
         # get 3D boundary from posed depth img   todo update sparse pc when append frame
         pcs = open3d.geometry.PointCloud()
-        for kf_id in range(self.n_keyframes):
+        for kf_id in range(self.n_keyframes) :
             mask = self.rgbs_batch[kf_id, :, :, self.state_idx].squeeze() == self.this_obj
             depth = self.depth_batch[kf_id].cpu().clone()
-            twc = self.t_wc_batch[kf_id].cpu().numpy()
+            twc = self.t_wc_batch[kf_id].cpu().clone().numpy()
             if self.obj_id == 0:
                 mask = mask.transpose(0,1)
                 depth = depth.transpose(0,1)
                 twc[:3,1]*= -1
-                twc[:3,1]*= -1
+                twc[:3,2]*= -1
             depth[~mask] = 0#只对mask为0的值进行操作
             depth = depth.permute(1,0).numpy().astype(np.float32)
             T_CW = np.linalg.inv(twc)
@@ -333,7 +336,7 @@ class sceneObject:
         Returns:
             return_mesh (trimesh.Trimesh): the convex hull.
         """
-
+        start_time = time.time()
         H, W, fx, fy, cx, cy = cfg.H, cfg.W, cfg.fx, cfg.fy, cfg.cx, cfg.cy
         self.mesh_bound_scale =cfg.mesh_bound_scale
 
@@ -350,16 +353,20 @@ class sceneObject:
                 sdf_trunc=0.04 * scale,
                 color_type=open3d.integration.TSDFVolumeColorType.RGB8)
         cam_points = []
-        for kf_id in range(20):
+        for kf_id in range(self.n_keyframes):
             c2w = self.t_wc_batch[kf_id].cpu().clone().numpy()
-            # convert to open3d camera pose
+            # convert to open3d camera pose #############
             c2w[:3, 1] *= -1.0
             c2w[:3, 2] *= -1.0
             w2c = np.linalg.inv(c2w)
             cam_points.append(c2w[:3, 3])
+            mask = self.rgbs_batch[kf_id, :, :, self.state_idx].squeeze() == self.this_obj
+            mask= mask.cpu().clone()
             depth = self.depth_batch[kf_id].cpu().clone().numpy()
-            color = self.rgbs_batch[kf_id,:,:,:3].cpu().clone().numpy()
-
+            color = self.rgbs_batch[kf_id,:,:,:3].cpu().clone().numpy() /255.0
+            #print("mask device:", mask.device)
+            #print("depth device:", depth.device)
+            depth[~mask] = 0#只对mask为0的值进行操作
             depth = open3d.geometry.Image(depth.astype(np.float32))
             color = open3d.geometry.Image(np.array(
                 (color * 255).astype(np.uint8)))
@@ -387,6 +394,8 @@ class sceneObject:
         points = np.array(mesh.vertices)
         faces = np.array(mesh.triangles)
         return_mesh = trimesh.Trimesh(vertices=points, faces=faces)
+        endtime = time.time()
+        print("!!!Time to get mesh bound: ",endtime-start_time, "s", "keyframe length:", self.n_keyframes)
         return return_mesh
 
 

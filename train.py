@@ -12,6 +12,7 @@ import shutil
 import Renderer
 from pynvml import *
 import matplotlib
+import cv2
 
 if __name__ == "__main__":
     #############################################
@@ -46,7 +47,7 @@ if __name__ == "__main__":
     vis3d.create_window(window_name="3D mesh vis",
                         width=cfg.W,
                         height=cfg.H,
-                        left=0, top=0)#原本left=600, top=50
+                        left=600, top=50)#原本left=600, top=50
     view_ctl = vis3d.get_view_control()
     view_ctl.set_constant_z_far(10.)#sets the constant value for the far clipping plane distance. 
 
@@ -74,6 +75,7 @@ if __name__ == "__main__":
         scaler = torch.cuda.amp.GradScaler()  # amp https://pytorch.org/blog/accelerating-training-on-nvidia-gpus-with-pytorch-automatic-mixed-precision/
     optimiser = torch.optim.AdamW([torch.autograd.Variable(torch.tensor(0))], lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
 
+
     #############################################
     # init data stream
     if not cfg.live_mode:#default:not
@@ -97,15 +99,17 @@ if __name__ == "__main__":
     # init vmap
     fc_models, pe_models = [], []
     scene_bg = None
-    nvmlInit()  
-    handle = nvmlDeviceGetHandleByIndex(0)
-    info_past = nvmlDeviceGetMemoryInfo(handle)
+    estimate_c2w_list = torch.zeros((dataset_len, 4, 4), device=cfg.device)
+    estimate_c2w_list.share_memory_()
+    #nvmlInit()  
+    #handle = nvmlDeviceGetHandleByIndex(0)
+    #info_past = nvmlDeviceGetMemoryInfo(handle)
     for frame_id in tqdm(range(dataset_len)):
         print("*********************************************")
-        info = nvmlDeviceGetMemoryInfo(handle)
-        if info.used - info_past.used > 1024*1024:
-            print(f"Used GPU Memory in frame_id {frame_id}: {info.used / (1024 * 1024)} MB")
-        info_past = info
+        #info = nvmlDeviceGetMemoryInfo(handle)
+        #if info.used - info_past.used > 1024*1024:
+        #    print(f"Used GPU Memory in frame_id {frame_id}: {info.used / (1024 * 1024)} MB")
+        #info_past = info
         # get new frame data
         with performance_measure(f"getting next data"):
             if not cfg.live_mode:
@@ -113,7 +117,7 @@ if __name__ == "__main__":
                 sample = next(dataloader_iterator)#sample is coming from class replica or scannet
             else:
                 pass
-
+            
         if sample is not None:  # new frame
             last_frame_time = time.time()
             with performance_measure(f"Appending data"):
@@ -126,6 +130,10 @@ if __name__ == "__main__":
                 eslam_twc = twc.clone()
                 eslam_twc[:3,1] = -1*eslam_twc[:3,1]
                 eslam_twc[:3,2] = -1*eslam_twc[:3,2]
+                estimate_c2w_list[frame_id] = twc
+                #gt_color_np = (eslam_rgb).cpu().clone().numpy()#for test
+                #file_path = "color_image_"+str(frame_id)+ ".jpg"
+                #cv2.imwrite(file_path, gt_color_np)
                 
                 if "frame_id" in sample.keys():
                     live_frame_id = sample["frame_id"]
@@ -173,15 +181,35 @@ if __name__ == "__main__":
                         if cfg.do_bg and obj_id == 0:   # todo param, Here we use ESLAM
                             #三个扔进去的参数要改
                             # 参数转换
-
                             scene_bg = sceneObject(cfg, obj_id, eslam_rgb, eslam_depth, eslam_state, eslam_bbox, eslam_twc, live_frame_id)
                             lr_factor = cfg.lr_factor
                             # scene_bg.init_obj_center(intrinsic_open3d, depth, state, twc)
                             #optimiser.add_param_group({"params": scene_bg.trainer.fc_occ_map.parameters(), "lr": cfg.learning_rate, "weight_decay": cfg.weight_decay})
                             #optimiser.add_param_group({"params": scene_bg.trainer.pe.parameters(), "lr": cfg.learning_rate, "weight_decay": cfg.weight_decay})
-                            optimiser.add_param_group({"params": scene_bg.trainer.decoders_para_list, "lr": cfg.decoders_lr*lr_factor, "weight_decay": cfg.weight_decay})
-                            optimiser.add_param_group({"params": scene_bg.trainer.planes_para, "lr": cfg.planes_lr*lr_factor, "weight_decay": cfg.weight_decay})
-                            optimiser.add_param_group({"params": scene_bg.trainer.c_planes_para, "lr": cfg.c_planes_lr*lr_factor, "weight_decay": cfg.weight_decay})
+                            #double optimiser
+                            decoders_para_list = []
+                            decoders_para_list += list(trainer.decoders.parameters())
+                            planes_para = []
+                            for planes in [trainer.eslam.shared_planes_xy, trainer.eslam.shared_planes_xz, trainer.eslam.shared_planes_yz]:
+                                for i, plane in enumerate(planes):
+                                    plane = nn.Parameter(plane)
+                                    planes_para.append(plane)
+                                    planes[i] = plane
+
+                            c_planes_para = []
+                            for c_planes in [trainer.eslam.shared_c_planes_xy,trainer.eslam.shared_c_planes_xz, trainer.eslam.shared_c_planes_yz]:
+                                for i, c_plane in enumerate(c_planes):
+                                    c_plane = nn.Parameter(c_plane)
+                                    c_planes_para.append(c_plane)
+                                    c_planes[i] = c_plane
+                            bg_optimiser = torch.optim.Adam([{'params': scene_bg.trainer.decoders_para_list, 'lr': 0},
+                                          {'params': planes_para, 'lr': 0},
+                                          {'params': c_planes_para, 'lr': 0}])
+                            
+                            bg_optimiser.param_groups[0]['lr'] = cfg.decoders_lr*lr_factor
+                            bg_optimiser.param_groups[1]['lr'] = cfg.planes_lr*lr_factor
+                            bg_optimiser.param_groups[2]['lr'] = cfg.c_planes_lr*lr_factor
+                            
                             vis_dict.update({obj_id: scene_bg})
                         else:
                             scene_obj = sceneObject(cfg, obj_id, rgb, depth, state, bbox, twc, live_frame_id)
@@ -298,7 +326,7 @@ if __name__ == "__main__":
                           
                 bg_input_pcs = bg_input_pcs.to(cfg.training_device)
                 bg_gt_depth = bg_gt_depth.to(cfg.training_device)
-                bg_gt_rgb = bg_gt_rgb.to(cfg.training_device)/255
+                bg_gt_rgb = bg_gt_rgb.to(cfg.training_device)/255.
                 bg_valid_depth_mask = bg_valid_depth_mask.to(cfg.training_device)
                 bg_obj_mask = bg_obj_mask.to(cfg.training_device)
                 bg_sampled_z = bg_sampled_z.to(cfg.training_device) 
@@ -351,7 +379,7 @@ if __name__ == "__main__":
                     exit(-1)
             # step loss
             with performance_measure(f"Batch LOSS"):
-                batch_loss, _ = loss.step_batch_loss(batch_alpha, batch_color,
+                batch_loss, _ = loss.step_batch_loss(cfg,batch_alpha, batch_color,
                                      batch_gt_depth.detach(), batch_gt_rgb.detach(),
                                      batch_obj_mask.detach(), batch_depth_mask.detach(),
                                      batch_sampled_z.detach())
@@ -364,8 +392,7 @@ if __name__ == "__main__":
                     # Color loss
                     bg_loss = bg_loss + cfg.w_color * torch.square(bg_gt_rgb - color).mean()
                     # Depth loss
-                    bg_loss = bg_loss + cfg.w_depth * torch.square(bg_gt_depth[depth_mask] - depth[depth_mask]).mean()
-                    batch_loss += bg_loss  
+                    bg_loss = bg_loss + cfg.w_depth * torch.square(bg_gt_depth[depth_mask] - depth[depth_mask]).mean() 
                     
             # with performance_measure(f"Backward"):
                 if AMP:
@@ -376,6 +403,9 @@ if __name__ == "__main__":
                     batch_loss.backward()
                     optimiser.step()
                 optimiser.zero_grad(set_to_none=True)
+                bg_optimiser.zero_grad()
+                bg_loss.backward(retain_graph=False)
+                bg_optimiser.step()
                 # print("loss ", batch_loss.item())
         # update each origin model params
         # todo find a better way    # https://github.com/pytorch/functorch/issues/280
@@ -393,36 +423,42 @@ if __name__ == "__main__":
             (cfg.live_mode and time.time()-last_frame_time>cfg.keep_live_time)) and frame_id >= 10:
             vis3d.clear_geometries()
             for obj_id, obj_k in vis_dict.items():
-                '''
-                if obj_id == 0:
-                    all_planes = obj_k.trainer.eslam.all_planes
-                    decoders = obj_k.trainer.decoders
-                    bound = obj_k.get_bound(intrinsic_open3d)#相机参数
-                    mesh = obj_k.trainer.bg_get_mesh(all_planes,decoders,bound)
-                
+                if obj_id == 0 and frame_id == dataset_len-1:
+                    mesh_bound = obj_k.get_bound_from_frames(cfg)
+                    #adaptive_grid_dim = int(np.minimum(np.max(bound.extent)//cfg.live_voxel_size+1, cfg.grid_dim))
+                    mesh = obj_k.trainer.meshing(mesh_bound, obj_k.obj_center, grid_dim=adaptive_grid_dim)
+                    pass
+                elif obj_id == 0:
+                    continue
                 else:
-                '''
-                if True:
                     bound = obj_k.get_bound(intrinsic_open3d)#相机参数
-                    if bound is None:
-                        print("get bound failed obj ", obj_id)
-                        continue
                     adaptive_grid_dim = int(np.minimum(np.max(bound.extent)//cfg.live_voxel_size+1, cfg.grid_dim))
                     mesh = obj_k.trainer.meshing(bound, obj_k.obj_center, grid_dim=adaptive_grid_dim)
-                    if mesh is None:
-                        print("meshing failed obj ", obj_id)
-                        continue
+                if bound is None:
+                    print("get bound failed obj ", obj_id)
+                    continue
+                if mesh is None:
+                    print("meshing failed obj ", obj_id)
+                    continue
                 # save to dir
+                
                 obj_mesh_output = os.path.join(log_dir, "scene_mesh")
                 os.makedirs(obj_mesh_output, exist_ok=True)
-                mesh.export(os.path.join(obj_mesh_output, "frame_{}_obj{}.obj".format(frame_id, str(obj_id))))
-                # live vis
-                open3d_mesh = vis.trimesh_to_open3d(mesh)
-                vis3d.add_geometry(open3d_mesh)
-                vis3d.add_geometry(bound)
-                # update vis3d
-                vis3d.poll_events()
-                vis3d.update_renderer()
+
+                if obj_id == 0: 
+                    mesh.export(os.path.join(obj_mesh_output, "frame_{}_obj{}.ply".format(frame_id, str(obj_id))))
+                    mesh_out_file = os.path.join(obj_mesh_output, "frame_{}_obj{}.ply".format(frame_id, str(obj_id)))
+                    obj_k.trainer.cull_mesh(mesh_out_file, cfg, args, cfg.device, estimate_c2w_list=estimate_c2w_list)
+                else:
+                    mesh.export(os.path.join(obj_mesh_output, "frame_{}_obj{}.obj".format(frame_id, str(obj_id))))
+                if obj_id != 0:
+                    # live vis
+                    open3d_mesh = vis.trimesh_to_open3d(mesh)
+                    vis3d.add_geometry(open3d_mesh)
+                    vis3d.add_geometry(bound)
+                    # update vis3d
+                    vis3d.poll_events()
+                    vis3d.update_renderer()
         if False:    # follow cam
             cam = view_ctl.convert_to_pinhole_camera_parameters()
             T_CW_np = np.linalg.inv(twc.cpu().numpy())
@@ -435,6 +471,7 @@ if __name__ == "__main__":
             if save_ckpt and ((((frame_id % cfg.n_vis_iter) == 0 or frame_id == dataset_len - 1) or
                                (cfg.live_mode and time.time() - last_frame_time > cfg.keep_live_time)) and frame_id >= 10):
                 for obj_id, obj_k in vis_dict.items():
+                    continue
                     ckpt_dir = os.path.join(log_dir, "ckpt", str(obj_id))
                     os.makedirs(ckpt_dir, exist_ok=True)
                     bound = obj_k.get_bound(intrinsic_open3d)   # update bound

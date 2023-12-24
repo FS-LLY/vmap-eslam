@@ -13,6 +13,8 @@ import skimage
 from packaging import version
 import numpy as np
 import open3d as o3d
+import time 
+from dataset import Replica,ScanNet
 
 class Trainer:
     def __init__(self, cfg):
@@ -29,6 +31,7 @@ class Trainer:
         self.marching_cubes_bound = cfg.marching_cubes_bound
         self.level_set = cfg.level_set
         self.points_batch_size=500000
+        self.scale = cfg.scale
 
         self.load_network(cfg)
 
@@ -45,23 +48,8 @@ class Trainer:
             self.decoders = self.decoders.to(cfg.data_device)
             decoders_para_list = []
             decoders_para_list += list(self.decoders.parameters())
-            planes_para = []
-            for planes in [eslam.shared_planes_xy, eslam.shared_planes_xz, eslam.shared_planes_yz]:
-                for i, plane in enumerate(planes):
-                    plane = nn.Parameter(plane)
-                    planes_para.append(plane)
-                    planes[i] = plane
-
-            c_planes_para = []
-            for c_planes in [eslam.shared_c_planes_xy,eslam.shared_c_planes_xz, eslam.shared_c_planes_yz]:
-                for i, c_plane in enumerate(c_planes):
-                    c_plane = nn.Parameter(c_plane)
-                    c_planes_para.append(c_plane)
-                    c_planes[i] = c_plane
+            
             self.eslam = eslam
-            self.decoders_para_list = decoders_para_list
-            self.planes_para = planes_para
-            self.c_planes_para = c_planes_para
         else:
             self.fc_occ_map = model.OccupancyMap(
                 self.emb_size1,
@@ -73,6 +61,8 @@ class Trainer:
     #渲染3D模型
     def meshing(self, bound, obj_center, grid_dim=256):
         with torch.no_grad():
+            if self.obj_id == 0:
+                return self.bg_get_mesh(self.eslam.all_planes,self.decoders,bound)
             occ_range = [-1., 1.]
             range_dist = occ_range[1] - occ_range[0]
             scene_scale_np = bound.extent / (range_dist * self.bound_extent)
@@ -80,12 +70,14 @@ class Trainer:
             transform_np = np.eye(4, dtype=np.float32)
             transform_np[:3, 3] = bound.center
             transform_np[:3, :3] = bound.R
+            
+
             # transform_np = np.linalg.inv(transform_np)  #
             transform = torch.from_numpy(transform_np).to(self.device)
             grid_pc = render_rays.make_3D_grid(occ_range=occ_range, dim=grid_dim, device=self.device,
                                                 scale=scene_scale, transform=transform).view(-1, 3)
             grid_pc -= obj_center.to(grid_pc.device)
-            ret = self.eval_points(grid_pc)#内存爆了
+            ret = self.eval_points(grid_pc,bound)#内存爆了
             if ret is None:
                 return None
 
@@ -102,7 +94,7 @@ class Trainer:
             mesh.apply_scale(scene_scale_np)
             mesh.apply_transform(transform_np)
             vertices_pts = torch.from_numpy(np.array(mesh.vertices)).float().to(self.device)
-            ret = self.eval_points(vertices_pts)
+            ret = self.eval_points(vertices_pts,bound)
             if ret is None:
                 return None
             _, color = ret
@@ -111,12 +103,16 @@ class Trainer:
             mesh.visual.vertex_colors = vertex_colors
             return mesh
 
-    def eval_points(self, points,chunk_size=100000):
+    def eval_points(self, points,bound,chunk_size=100000):
         # 256^3 = 16777216
         if self.obj_id == 0 and self.cfg.do_bg:
             self.points_batch_size = 500000
             p_split = torch.split(points, self.points_batch_size)
             bound = self.bound##################################
+            #bg_bound =  torch.zeros(3,2)
+            #bg_bound[:,0] = torch.from_numpy(bound.center - bound.extent)
+            #bg_bound[:,1] = torch.from_numpy(bound.center + bound.extent)
+            #bound =bg_bound
             rets = []
             for pi in p_split:
                 # mask for points out of bound
@@ -131,11 +127,11 @@ class Trainer:
                 rets.append(ret)
 
             ret = torch.cat(rets, dim=0)
-            alpha = self.sdf2alpha(ret[..., -1], self.decoders.beta)#volume densities
+            #alpha = self.sdf2alpha(ret[..., -1], self.decoders.beta)#volume densities
             
-            occ = 1 - torch.exp(-alpha)
-            return (occ,ret[...,:3])#occ,rgb
-            #return (alpha,ret[...,:3])##?S
+            #occ = 1 - torch.exp(-alpha)
+            return (ret[..., -1],ret[...,:3])#sdf,rgb
+            #return (ret[...,-1],ret[...,:3])##?S
         else:
             alpha, color = [], []
             n_chunks = int(np.ceil(points.shape[0] / chunk_size))
@@ -171,12 +167,17 @@ class Trainer:
         """
 
         with torch.no_grad():
+            start_time = time.time()
             grid = self.get_grid_uniform(self.resolution)
             points = grid['grid_points']
-            
+            end_time = time.time()
+            print("time to get grid_point:",end_time-start_time, "s" )
+            start_time = time.time()
 
             z = []
             mask = []
+
+            """
             for i, pnts in enumerate(torch.split(points, self.points_batch_size, dim=0)):
                 mask.append(mesh_bound.contains(pnts.cpu().numpy()))
             mask = np.concatenate(mask, axis=0)
@@ -185,7 +186,76 @@ class Trainer:
                 z.append(self.eval_points(pnts.to(device), all_planes, decoders).cpu().numpy()[:, -1])
             z = np.concatenate(z, axis=0)
             z[~mask] = -1
+            """
 
+            for i, pnts in enumerate(torch.split(points, self.points_batch_size, dim=0)):
+                print("index:",i)
+                start = time.time()
+                temp_pnts = pnts.cpu().numpy()
+                end = time.time()
+                print("move: ", end - start, "s")
+
+                start = time.time()
+                temp = mesh_bound.contains(temp_pnts)
+                end = time.time()
+                print("!!!contain: ", end - start, "s")
+                print("pnts: ", pnts, pnts.shape)
+
+                start = time.time()
+                mask.append(temp)
+                end = time.time()
+                print("append: ", end - start, "s")
+
+            print("mesh_bound:", mesh_bound)
+            print("Number of vertices:", mesh_bound.vertices.shape[0])
+            print("Number of faces:", mesh_bound.faces.shape[0])
+            print("Vertices:", mesh_bound.vertices)
+            print("Faces:", mesh_bound.faces)
+
+            start = time.time()
+            mask = np.concatenate(mask, axis=0)
+            end = time.time()
+            print("concat: ", end - start, "s")
+
+            for i, pnts in enumerate(torch.split(points, self.points_batch_size, dim=0)):
+                print("index:",i)
+                start = time.time()
+                pnts_temp = pnts.to(device)
+                end = time.time()
+                print("move_pnts: ", end - start, "s")
+                
+                start = time.time()
+                sdf,_ =self.eval_points(pnts_temp, all_planes, decoders)
+                end = time.time()
+                print("eval_pnts: ", end - start, "s")
+
+                start = time.time()
+                sdf_temp= sdf.cpu().numpy()
+                end = time.time()
+                print("move_sdf: ", end - start, "s")
+
+                start = time.time()
+                z.append(sdf_temp)
+                end = time.time()
+                print("append:", end - start, "s")
+
+            start = time.time()
+            z = np.concatenate(z, axis=0)
+            end = time.time()
+            print("concat:", end - start, "s")
+
+            print("z:", len(z), z)
+            print("mask:", len(mask), mask)
+            np.savetxt("z.txt", z)
+            np.savetxt("mask.txt", mask)
+            start = time.time()
+            z[~mask] = -1
+            end_time = time.time()
+            print("!!! -1:",end_time-start_time, "s")
+            print("z:", len(z), z)
+            print("mask:", len(mask), mask)
+
+            start_time = time.time()
             try:
                 if version.parse(
                         skimage.__version__) > version.parse('0.15.0'):
@@ -214,21 +284,28 @@ class Trainer:
 
             # convert back to world coordinates
             vertices = verts + np.array([grid['xyz'][0][0], grid['xyz'][1][0], grid['xyz'][2][0]])
-
+            end_time = time.time()
+            print("time to get vertice of point ",end_time-start_time, "s" )
+            start_time = time.time()
             if color:
                 # color is extracted by passing the coordinates of mesh vertices through the network
                 points = torch.from_numpy(vertices)
                 z = []
                 for i, pnts in enumerate(torch.split(points, self.points_batch_size, dim=0)):
-                    z_color = self.eval_points(pnts.to(device).float(), all_planes, decoders).cpu()[..., :3]
-                    z.append(z_color)
+                    _, z_color = self.eval_points(pnts.to(device).float(), all_planes, decoders)
+                    z.append(z_color.cpu())
                 z = torch.cat(z, dim=0)
                 vertex_colors = z.numpy()
             else:
                 vertex_colors = None
-
+            end_time = time.time()
+            print("time to get color ",end_time-start_time, "s" )
+            start_time = time.time()
             vertices /= self.scale
             mesh = trimesh.Trimesh(vertices, faces, vertex_colors=vertex_colors)
+            end_time = time.time()
+            print("time to mesh bg ",end_time-start_time, "s" )
+            start_time = time.time()
             return mesh
 
     def get_grid_uniform(self, resolution):
@@ -266,8 +343,89 @@ class Trainer:
         """
         return 1. - torch.exp(-beta * torch.sigmoid(-sdf * beta))
     
+    def cull_mesh(mesh_file, cfg, args, device, estimate_c2w_list=None):
+        """
+        Cull the mesh by removing the points that are not visible in any of the frames.
+        The output mesh file will be saved in the same directory as the input mesh file.
+        Args:
+            mesh_file (str): path to the mesh file
+            cfg (dict): configuration
+            args (argparse.Namespace): arguments
+            device (torch.device): device
+            estimate_c2w_list (list): list of estimated camera poses, if None, it uses the ground truth camera poses
+        Returns:
+            None
 
-    
+        """
+        if cfg.dataset_format == "Replica":
+            frame_reader = Replica(cfg)
+        elif cfg.dataset_format == "ScanNet":
+            frame_reader = ScanNet(cfg)
+
+        eval_rec = cfg['meshing']['eval_rec']
+        truncation = cfg['model']['truncation']
+        H, W, fx, fy, cx, cy = cfg['cam']['H'], cfg['cam']['W'], cfg['cam']['fx'], cfg['cam']['fy'], cfg['cam']['cx'], cfg['cam']['cy']
+
+        if estimate_c2w_list is not None:
+            n_imgs = len(estimate_c2w_list)
+        else:
+            n_imgs = len(frame_reader)
+
+        mesh = trimesh.load(mesh_file, process=False)
+        pc = mesh.vertices
+
+        whole_mask = np.ones(pc.shape[0]).astype('bool')
+        for i in tqdm(range(0, n_imgs, 1)):
+            _, _, depth, c2w = frame_reader[i]
+            depth, c2w = depth.to(device), c2w.to(device)
+
+            if not estimate_c2w_list is None:
+                c2w = estimate_c2w_list[i].to(device)
+
+            points = pc.copy()
+            points = torch.from_numpy(points).to(device)
+
+            w2c = torch.inverse(c2w)
+            K = torch.from_numpy(
+                np.array([[fx, .0, cx], [.0, fy, cy], [.0, .0, 1.0]]).reshape(3, 3)).to(device)
+            ones = torch.ones_like(points[:, 0]).reshape(-1, 1).to(device)
+            homo_points = torch.cat(
+                [points, ones], dim=1).reshape(-1, 4, 1).to(device).float()
+            cam_cord_homo = w2c@homo_points
+            cam_cord = cam_cord_homo[:, :3]
+
+            cam_cord[:, 0] *= -1
+            uv = K.float()@cam_cord.float()
+            z = uv[:, -1:]+1e-5
+            uv = uv[:, :2]/z
+            uv = uv.squeeze(-1)
+
+            grid = uv[None, None].clone()
+            grid[..., 0] = grid[..., 0] / W
+            grid[..., 1] = grid[..., 1] / H
+            grid = 2 * grid - 1
+            depth_samples = F.grid_sample(depth[None, None], grid, padding_mode='zeros', align_corners=True).squeeze()
+
+            edge = 0
+            if eval_rec:
+                mask = (depth_samples + truncation >= -z[:, 0, 0]) & (0 <= -z[:, 0, 0]) & (uv[:, 0] < W - edge) & (uv[:, 0] > edge) & (uv[:, 1] < H - edge) & (uv[:, 1] > edge)
+            else:
+                mask = (0 <= -z[:, 0, 0]) & (uv[:, 0] < W -edge) & (uv[:, 0] > edge) & (uv[:, 1] < H-edge) & (uv[:, 1] > edge)
+
+            mask = mask.cpu().numpy()
+
+            whole_mask &= ~mask
+
+        face_mask = whole_mask[mesh.faces].all(axis=1)
+        mesh.update_faces(~face_mask)
+        mesh.remove_unreferenced_vertices()
+        mesh.process(validate=False)
+
+        mesh_ext = mesh_file.split('.')[-1]
+        output_file = mesh_file[:-len(mesh_ext) - 1] + '_culled.' + mesh_ext
+
+        mesh.export(output_file)
+        
 
 
 
