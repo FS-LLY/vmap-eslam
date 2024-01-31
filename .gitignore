@@ -1,0 +1,7 @@
+/logs/
+/_pycache_/
+/.vscode/
+/media/
+*.obj
+*.ply
+*.txt
