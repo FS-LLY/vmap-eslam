@@ -1,5 +1,6 @@
 /logs/
 /_pycache_/
+/__pycache__/
 /.vscode/
 /media/
 *.obj
