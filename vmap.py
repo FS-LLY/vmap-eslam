@@ -363,9 +363,6 @@ class sceneObject:
 
         cam_points = []
         for kf_id in range(self.n_keyframes):
-
-            print("kf_id:", kf_id)
-
             start_time = time.time()
             c2w = self.t_wc_batch[kf_id].cpu().clone().numpy()
             end_time = time.time()

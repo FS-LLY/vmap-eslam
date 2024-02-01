@@ -3,7 +3,7 @@ import render_rays
 import torch.nn.functional as F
 import torch.nn as nn
 
-def step_batch_loss(cfg,sdf, color, gt_depth, gt_color, sem_labels, mask_depth, z_vals,
+def step_batch_loss(cfg,depth,sdf, color, gt_depth, gt_color, sem_labels, mask_depth, z_vals,
                     color_scaling=5.0, opacity_scaling=10.0):
     """
     apply depth where depth are valid                                       -> mask_depth
@@ -64,31 +64,31 @@ def step_batch_loss(cfg,sdf, color, gt_depth, gt_color, sem_labels, mask_depth, 
     mask_sem = mask_sem.detach()
     mask_depth = (mask_depth > 0)
 
-    sdf = sdf.view(-1,10)
-    color = color.view(-1,10,3)
+    sdf = sdf.view(-1,40)
+    #color = color.view(-1,10,3)
     gt_depth = gt_depth.reshape(gt_depth.shape[0]*gt_depth.shape[1])
     gt_color = gt_color.reshape(gt_color.shape[0]*gt_color.shape[1],3)
-    z_vals = z_vals.reshape(z_vals.shape[0]*z_vals.shape[1],10)
+    z_vals = z_vals.reshape(z_vals.shape[0]*z_vals.shape[1],40)
 
     mask_obj = mask_obj.reshape(mask_obj.shape[0]*mask_obj.shape[1])
     mask_sem = mask_sem.reshape(mask_sem.shape[0]*mask_sem.shape[1])
     mask_depth = mask_depth.reshape(mask_depth.shape[0]*mask_depth.shape[1])
 
     beta = nn.Parameter(10 * torch.ones(1)).to("cuda:0")
-    alpha = sdf2alpha(sdf, beta)#beta=10
+    #alpha = sdf2alpha(sdf, beta)#beta=10
     #print(alpha.shape)
-    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1), device="cuda:0")
-                                            , (1. - alpha + 1e-10)], -1), -1)[:, :-1]
+    #weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1), device="cuda:0")
+    #                                        , (1. - alpha + 1e-10)], -1), -1)[:, :-1]
 
-    render_color = torch.sum(weights[..., None] *color, -2)
-    render_depth = torch.sum(weights * z_vals, -1)
-   
-    
+    #render_color = torch.sum(weights[..., None] *color, -2)
+    #render_depth = torch.sum(weights * z_vals, -1)
+    color = color.reshape(gt_color.shape[0],3)
+    depth = depth.reshape(gt_depth.shape[0])
     loss = sdf_losses(cfg,sdf[mask_depth & mask_sem], z_vals[mask_depth & mask_sem], gt_depth[mask_depth & mask_sem])
-    loss = loss + 5 * torch.square(render_color[mask_obj] - gt_color[mask_obj]).mean() #w_color = 5
-    loss = loss + 1 * torch.square(render_depth[mask_depth & mask_obj] - gt_depth[mask_depth & mask_obj]).mean()
+    loss = loss + 5 * torch.square(color[mask_obj] - gt_color[mask_obj]).mean() #w_color = 5
+    loss = loss + 1 * torch.square(depth[mask_depth & mask_obj] - gt_depth[mask_depth & mask_obj]).mean()
 
-
+    print("loss: ",loss)
     return loss, None       # return loss, loss_all.detach()
 def sdf2alpha(sdf, beta=10):
         """

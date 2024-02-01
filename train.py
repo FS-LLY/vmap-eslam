@@ -289,8 +289,9 @@ if __name__ == "__main__":
                 Batch_N_obj_mask.append(obj_mask)
                 Batch_N_input_pcs.append(input_pcs.reshape([input_pcs.shape[0] * input_pcs.shape[1], input_pcs.shape[2], input_pcs.shape[3]]))
                 Batch_N_sampled_z.append(sampled_z.reshape([sampled_z.shape[0] * sampled_z.shape[1], sampled_z.shape[2]]))
-                Batch_N_obj_origin.append(obj_origin.reshape([obj_origin.shape[0]*obj_origin.shape[1]]))
-                Batch_N_obj_dirs.append(obj_dirs.reshape([obj_origin.shape[0]*obj_origin.shape[1]]))
+                obj_origin = obj_origin.unsqueeze(1).expand(cfg.n_iter_per_frame * cfg.win_size, cfg.n_samples_per_frame, -1)
+                Batch_N_obj_origin.append(obj_origin.reshape([obj_origin.shape[0]*obj_origin.shape[1],obj_origin.shape[2]]))
+                Batch_N_obj_dirs.append(obj_dirs.reshape([obj_dirs.shape[0]*obj_dirs.shape[1],obj_dirs.shape[2]]))
                 # # vis sampled points in open3D
                 # # sampled pcs
                 # pc = open3d.geometry.PointCloud()
@@ -330,6 +331,8 @@ if __name__ == "__main__":
             Batch_N_depth_mask = torch.stack(Batch_N_depth_mask).to(cfg.training_device)
             Batch_N_obj_mask = torch.stack(Batch_N_obj_mask).to(cfg.training_device)
             Batch_N_sampled_z = torch.stack(Batch_N_sampled_z).to(cfg.training_device)
+            Batch_N_obj_origin = torch.stack(Batch_N_obj_origin).to(cfg.training_device)
+            Batch_N_obj_dirs = torch.stack(Batch_N_obj_dirs).to(cfg.training_device)
             if cfg.do_bg:     
                           
                 bg_input_pcs = bg_input_pcs.to(cfg.training_device)
@@ -361,9 +364,18 @@ if __name__ == "__main__":
                 batch_depth_mask = Batch_N_depth_mask[:, data_idx, ...]
                 batch_obj_mask = Batch_N_obj_mask[:, data_idx, ...]
                 batch_sampled_z = Batch_N_sampled_z[:, data_idx, ...]
+                batch_obj_origin = Batch_N_obj_origin[:, data_idx, ...]
+                batch_obj_dirs = Batch_N_obj_dirs[:, data_idx, ...]  
                 depth, color, sdf, z_vals = Renderer.render_batch_ray(cfg,scene_bg.trainer.eslam.all_planes, scene_bg.trainer.decoders,bg_dirs_W,
                                                         bg_origins, cfg.data_device, cfg.truncation,
                                                         gt_depth=bg_gt_depth)
+                
+                batch_depth,batch_rgb,batch_sdf,batch_z_vals = Renderer.render_batch_ray_obj(cfg,pe_model,pe_param,pe_buffer,fc_model, fc_param,fc_buffer,
+                                                        rays_d = batch_obj_dirs, rays_o=batch_obj_origin,
+                                                        device= cfg.data_device, truncation=cfg.truncation,
+                                                        gt_depth=batch_gt_depth)
+
+                
                 if cfg.training_strategy == "forloop":
                     # for loop training
                     batch_alpha = []
@@ -385,12 +397,13 @@ if __name__ == "__main__":
                 else:
                     print("training strategy {} is not implemented ".format(cfg.training_strategy))
                     exit(-1)
+                
             # step loss
             with performance_measure(f"Batch LOSS"):
-                batch_loss, _ = loss.step_batch_loss(cfg,batch_alpha, batch_color,
+                batch_loss, _ = loss.step_batch_loss(cfg,batch_depth,batch_sdf, batch_rgb,
                                      batch_gt_depth.detach(), batch_gt_rgb.detach(),
                                      batch_obj_mask.detach(), batch_depth_mask.detach(),
-                                     batch_sampled_z.detach())
+                                     batch_z_vals.detach())
 
                 if cfg.do_bg:                   
                     #eslam loss

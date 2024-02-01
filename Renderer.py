@@ -41,6 +41,7 @@
 
 import torch
 from common import get_rays, sample_pdf, normalize_3d_coordinate
+from functorch import vmap
 
 #照这里添加参数
 def perturbation(z_vals):
@@ -146,7 +147,7 @@ def render_batch_ray(cfg,all_planes, decoders, rays_d, rays_o, device, truncatio
 
     return rendered_depth, rendered_rgb, raw[..., -1], z_vals
 
-def render_batch_ray_obj(cfg,pe, fc_occ_map, rays_d, rays_o, device, truncation, gt_depth=None):
+def render_batch_ray_obj(cfg,*models, rays_d, rays_o, device, truncation, gt_depth=None):
     """
     Render depth and color for a batch of rays.
     Args:
@@ -166,14 +167,15 @@ def render_batch_ray_obj(cfg,pe, fc_occ_map, rays_d, rays_o, device, truncation,
     """
     n_stratified = cfg.n_stratified
     n_importance = cfg.n_importance
-    n_rays = rays_o.shape[0]
-    z_vals = torch.empty([n_rays, n_stratified + n_importance], device=device)
+    pe_model,pe_param,pe_buffer,fc_model, fc_param,fc_buffer = models
+    n_rays = rays_o.shape[0:2]
+    z_vals = torch.empty((n_rays[0]*n_rays[1], n_stratified + n_importance), device=device)
     near = 0.0
     t_vals_uni = torch.linspace(0., 1., steps=n_stratified, device=device)
     t_vals_surface = torch.linspace(0., 1., steps=n_importance, device=device)
 
     ### pixels with gt depth:
-    gt_depth = gt_depth.reshape(-1, 1)#2280
+    gt_depth = gt_depth.reshape(-1, 1)#2280*1
     gt_mask = (gt_depth > 0).squeeze()
     gt_nonezero = gt_depth[gt_mask]
 
@@ -190,6 +192,7 @@ def render_batch_ray_obj(cfg,pe, fc_occ_map, rays_d, rays_o, device, truncation,
     z_vals[gt_mask] = z_vals_nonzero #gt_mask:2800
 
     ### pixels without gt depth (importance sampling):
+    '''
     if not gt_mask.all():
         with torch.no_grad():
             rays_o_uni = rays_o[~gt_mask].detach()
@@ -208,9 +211,9 @@ def render_batch_ray_obj(cfg,pe, fc_occ_map, rays_d, rays_o, device, truncation,
             pts_uni = rays_o_uni.unsqueeze(1) + rays_d_uni.unsqueeze(1) * z_vals_uni.unsqueeze(-1)  # [n_rays, n_stratified, 3]
 
             pts_uni_nor = normalize_3d_coordinate(pts_uni.clone(), cfg.bound)
-            embedding = pe(pts_uni_nor)
-            alpha_uni = fc_occ_map(embedding)
-            alpha_uni = sdf2alpha(alpha_uni)
+            embedding = vmap(pe_model)(pe_param,pe_buffer,pts_uni_nor)
+            sdf_uni = vmap(fc_model)(fc_param,fc_buffer,embedding)
+            alpha_uni = sdf2alpha(sdf_uni)
             weights_uni = alpha_uni * torch.cumprod(torch.cat([torch.ones((alpha_uni.shape[0], 1), device=device)
                                                     , (1. - alpha_uni + 1e-10)], -1), -1)[:, :-1]
 
@@ -218,20 +221,21 @@ def render_batch_ray_obj(cfg,pe, fc_occ_map, rays_d, rays_o, device, truncation,
             z_samples_uni = sample_pdf(z_vals_uni_mid, weights_uni[..., 1:-1], n_importance, det=False, device=device)
             z_vals_uni, ind = torch.sort(torch.cat([z_vals_uni, z_samples_uni], -1), -1)
             z_vals[~gt_mask] = z_vals_uni
-
+    '''
+    z_vals = z_vals.reshape(n_rays[0],n_rays[1],-1)
     pts = rays_o[..., None, :] + rays_d[..., None, :] * \
-            z_vals[..., :, None]  # [n_rays, n_stratified+n_importance, 3]
+            z_vals[..., :, None]  # [n_rays, n_stratifipe_buffered+n_importance, 3]
 
-    embedding = pe(pts)
-    sdf , color = fc_occ_map(embedding)
-    alpha = sdf2alpha(sdf[...,-1])
-    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1), device=device)
-                                            , (1. - alpha + 1e-10)], -1), -1)[:, :-1]
+    batch_embedding = vmap(pe_model)(pe_param,pe_buffer, pts)
+    batch_sdf, batch_color = vmap(fc_model)(fc_param, fc_buffer, batch_embedding)
+    alpha = sdf2alpha(batch_sdf[...,-1])
+    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0],alpha.shape[1], 1), device=device)
+                                            , (1. - alpha + 1e-10)], -1), -1)[..., :-1]
 
-    rendered_rgb = torch.sum(weights[..., None] * color, -2)
+    rendered_rgb = torch.sum(weights[..., None] * batch_color, -2)
     rendered_depth = torch.sum(weights * z_vals, -1)
 
-    return rendered_depth, rendered_rgb, sdf[...,-1], z_vals
+    return rendered_depth, rendered_rgb, batch_sdf[...,-1], z_vals
 
 def sdf2alpha(sdf, beta=10):
     """
